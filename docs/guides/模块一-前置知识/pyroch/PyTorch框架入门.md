@@ -298,8 +298,14 @@ class SimpleDataset(Dataset):
         return self.data[idx], self.labels[idx]
 
 dataset = SimpleDataset(torch.randn(1000, 784), torch.randint(0, 10, (1000,)))
-loader = DataLoader(dataset, batch_size=64, shuffle=True,
-                    num_workers=4, pin_memory=True, drop_last=True)
+loader = DataLoader(
+    dataset,
+    batch_size=64,
+    shuffle=True,        # 每个 epoch 打乱样本顺序，避免模型记住数据排列
+    num_workers=4,        # 用 4 个子进程并行预取数据，避免 GPU 空等 CPU 处理数据
+    pin_memory=True,      # 把 batch 锁页在固定内存里，H2D 拷贝可以走异步 DMA，减少阻塞
+    drop_last=True,       # 丢弃最后一个不满 batch_size 的批次，保证每个 batch 形状一致
+)
 ```
 
 > **AI Infra 视角**：`num_workers` 过小会导致 GPU 等数据（data loading bottleneck）；`pin_memory=True` 使传输走异步 DMA，避免 CPU 拷贝开销。

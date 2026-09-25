@@ -110,7 +110,7 @@ PagedAttention 的核心思想非常直观——把操作系统管理内存的�
 uv venv --python 3.12 --seed
 source .venv/bin/activate
 
-# 安装 vLLM（自动检测 CUDA 版本）
+# 安装 vLLM（--torch-backend=auto 会探测本机 CUDA 驱动版本，自动选择匹配的 PyTorch 预编译包）
 uv pip install vllm --torch-backend=auto
 ```
 
@@ -264,7 +264,7 @@ vllm serve Qwen/Qwen2.5-7B-Instruct
 vllm serve Qwen/Qwen2.5-7B-Instruct \
     --host 0.0.0.0 \
     --port 8080 \
-    --tensor-parallel-size 2
+    --tensor-parallel-size 2  # 把模型的每一层切成 2 份分别放到 2 张 GPU 上，用于单机多卡放不下/加速单个大模型
 ```
 
 💡 **提示**：同样可以通过 `--generation-config vllm` 来禁用 HuggingFace 默认的 generation_config。
