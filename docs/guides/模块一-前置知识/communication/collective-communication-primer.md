@@ -424,10 +424,10 @@ import torch
 import torch.distributed as dist
 
 def setup(rank, world_size):
-    os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "12355"
+    os.environ["MASTER_ADDR"] = "localhost"  # 主进程（rank 0）地址，各进程据此建立通信连接的会合点
+    os.environ["MASTER_PORT"] = "12355"      # 主进程监听端口，所有进程必须一致
     dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
-    torch.cuda.set_device(rank)
+    torch.cuda.set_device(rank)  # 假设一个进程对应一张 GPU，用 rank 作为本机 GPU 编号
 
 def cleanup():
     dist.destroy_process_group()
@@ -439,6 +439,7 @@ dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
 # AllGather：收集所有卡的 tensor 拼成完整数据
 world_size = dist.get_world_size()
 local_chunk = torch.randn(256, device=f"cuda:{dist.get_rank()}")
+# gathered 需要预先分配好 world_size 个同形状的张量作为接收缓冲区，all_gather 会原地填充
 gathered = [torch.zeros(256, device=f"cuda:{dist.get_rank()}") for _ in range(world_size)]
 dist.all_gather(gathered, local_chunk)
 
@@ -501,6 +502,7 @@ cd nccl-tests
 make MPI=1 MPI_HOME=/usr/local/mpi CUDA_HOME=/usr/local/cuda NCCL_HOME=/usr/local/nccl
 
 # 单机 8 卡 AllReduce 带宽测试
+# -b 起始数据量，-e 结束数据量，-f 每步的倍增因子，-g 参与测试的 GPU 数
 ./build/all_reduce_perf -b 8 -e 256M -f 2 -g 8
 
 # 多机测试（通过 MPI 启动）

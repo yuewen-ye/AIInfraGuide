@@ -93,15 +93,16 @@ Volta 开启了一个重要的编程范式转变：要想充分利用 Tensor Cor
 import torch
 from torch.cuda.amp import autocast, GradScaler
 
+# GradScaler 用于放大 loss 再反向传播，避免 FP16 梯度数值过小下溢为 0
 scaler = GradScaler()
 for data, target in dataloader:
     optimizer.zero_grad()
     with autocast():  # 自动选择 FP16/FP32
         output = model(data)
         loss = criterion(output, target)
-    scaler.scale(loss).backward()
-    scaler.step(optimizer)
-    scaler.update()
+    scaler.scale(loss).backward()  # 先放大 loss 再反传，保护小梯度不被下溢吞掉
+    scaler.step(optimizer)         # 反缩放梯度后再更新参数，并跳过出现 inf/NaN 的这一步
+    scaler.update()                # 根据本轮是否溢出，动态调整下一轮的放大系数
 ```
 
 ## 4. Turing 架构（2018）——RT Core 与推理加速
@@ -138,7 +139,7 @@ Turing 架构推动了 **模型量化（Quantization）** 在工业界的普及�
 # 1. 导出 ONNX 模型
 python export_onnx.py --model resnet50 --output model.onnx
 
-# 2. 用 trtexec 构建 INT8 engine（需要校准数据集）
+# 2. 用 trtexec（TensorRT 自带的模型构建与性能测试命令行工具）构建 INT8 engine（需要校准数据集）
 trtexec --onnx=model.onnx --int8 --calib=calibration_cache.bin --saveEngine=model_int8.engine
 ```
 
@@ -175,6 +176,7 @@ Ampere 引入了 **TF32（TensorFloat-32）** 精度格式。TF32 使用 FP32 �
 nvidia-smi mig -lgip
 
 # 创建一个 MIG 实例（以 3g.20gb 为例：3 个 Compute Slice + 20GB 显存）
+# -cgi 后的 9,9 是 GPU Instance Profile ID（对应 3g.20gb 配置），逗号分隔可一次创建多个
 sudo nvidia-smi mig -cgi 9,9 -C
 
 # 查看已创建的实例
@@ -245,13 +247,13 @@ FP8 的理论算力是 BF16 的两倍。但精度降低了，模型质量不会�
 **Transformer Engine** 是一个软硬件协同的机制：它在每一层的计算前，动态分析张量的数值分布，自动决定这一层用 FP8 还是 BF16/FP16。可以理解为一个"自动挡"——在直路上（数值稳定的层）挂高速档（FP8），在弯道上（数值敏感的层）自动降档（BF16）。
 
 ```python
-# 使用 Transformer Engine 的 FP8 训练
+# 使用 Transformer Engine（NVIDIA 提供的 FP8 训练加速库）的 FP8 训练
 import transformer_engine.pytorch as te
 
 # 替换标准 Linear 层为 TE 的 FP8 版本
 model.layer = te.Linear(hidden_size, hidden_size)
 
-# 启用 FP8 自动混合精度
+# 启用 FP8 自动混合精度：内部按张量数值分布动态决定用 FP8 还是回退到 BF16/FP16
 with te.fp8_autocast(enabled=True):
     output = model(input_data)
 ```

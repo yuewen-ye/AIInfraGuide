@@ -318,17 +318,17 @@ B_gpu = B_cpu.cuda()
 
 # 预热
 torch.mm(A_gpu, B_gpu)
-torch.cuda.synchronize()
+torch.cuda.synchronize()  # GPU kernel 是异步启动的，需同步等待执行完毕才能开始计时
 
 # 计时
 start = time.perf_counter()
 C_cpu = torch.mm(A_cpu, B_cpu)
 cpu_time = time.perf_counter() - start
 
-torch.cuda.synchronize()
+torch.cuda.synchronize()  # 确保上一步 GPU 计算已结束，避免计时起点不准
 start = time.perf_counter()
 C_gpu = torch.mm(A_gpu, B_gpu)
-torch.cuda.synchronize()
+torch.cuda.synchronize()  # 等待 GPU 计算真正完成，否则计时会小于实际耗时
 gpu_time = time.perf_counter() - start
 
 print(f"CPU: {cpu_time*1000:.2f} ms | GPU: {gpu_time*1000:.2f} ms | 加速比: {cpu_time/gpu_time:.1f}x")

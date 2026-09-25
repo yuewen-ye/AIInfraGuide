@@ -148,12 +148,14 @@ python -c "import vllm; print(vllm.__version__)"
 ### 4.1 基础用法
 
 ```python
+# LLM 是 vLLM 离线推理的入口类，负责加载模型权重并管理推理引擎；
+# SamplingParams 用于统一配置采样超参数（temperature、top_p 等）
 from vllm import LLM, SamplingParams
 
 # 定义采样参数
 sampling_params = SamplingParams(
-    temperature=0.8,
-    top_p=0.95,
+    temperature=0.8,  # 控制输出随机性，越高越发散
+    top_p=0.95,  # 核采样：只在累计概率达到 0.95 的候选 token 中采样
     max_tokens=256,
 )
 
@@ -171,6 +173,7 @@ outputs = llm.generate(prompts, sampling_params)
 
 for output in outputs:
     prompt = output.prompt
+    # outputs[0]：SamplingParams 默认 n=1，只生成一条候选结果，取第一条即可
     generated = output.outputs[0].text
     print(f"Prompt: {prompt}")
     print(f"Generated: {generated}\n")
@@ -190,6 +193,7 @@ from vllm import LLM, SamplingParams
 llm = LLM(model="Qwen/Qwen2.5-7B-Instruct")
 sampling_params = SamplingParams(temperature=0.7, max_tokens=512)
 
+# llm.chat 接受多轮对话消息列表，会自动套用模型自带的 Chat Template
 messages_list = [
     [
         {"role": "system", "content": "你是一个 AI Infra 专家。"},
@@ -209,6 +213,7 @@ for output in outputs:
 **方式二：手动应用模板**
 
 ```python
+# AutoTokenizer 来自 HuggingFace transformers 库，用于加载与模型匹配的分词器
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
@@ -220,7 +225,8 @@ messages_list = [
     [{"role": "user", "content": "什么是 KV Cache？"}],
 ]
 
-# 手动应用 chat template
+# 手动应用 chat template：tokenize=False 表示只返回拼接后的文本而不分词，
+# add_generation_prompt=True 会在末尾补上提示模型开始生成回复的标记
 texts = tokenizer.apply_chat_template(
     messages_list,
     tokenize=False,
@@ -237,6 +243,8 @@ outputs = llm.generate(texts, SamplingParams(temperature=0.7))
 vLLM 默认会读取模型仓库中的 `generation_config.json`（如果存在），并用其中的参数覆盖 vLLM 的默认值。如果你想使用 vLLM 自身的默认采样配置，需要显式设置：
 
 ```python
+# generation_config="vllm" 表示忽略模型仓库自带的 generation_config.json，
+# 改用 vLLM 自身的默认采样参数
 llm = LLM(model="Qwen/Qwen2.5-7B-Instruct", generation_config="vllm")
 ```
 
@@ -284,6 +292,8 @@ curl http://localhost:8000/v1/chat/completions \
 **使用 Python openai 客户端：**
 
 ```python
+# openai 是 OpenAI 官方 Python 客户端库；vLLM 服务实现了同样的接口协议，
+# 因此可以直接复用这个客户端来调用 vLLM
 from openai import OpenAI
 
 # 只需修改 base_url，其他代码完全不变
@@ -442,7 +452,7 @@ from vllm import LLM, SamplingParams
 
 llm = LLM(
     model="Qwen/Qwen2.5-72B-Instruct",
-    tensor_parallel_size=4,
+    tensor_parallel_size=4,  # 将模型权重切分到 4 张 GPU 上协同计算
 )
 
 outputs = llm.generate(["解释 vLLM 的架构"], SamplingParams(max_tokens=256))

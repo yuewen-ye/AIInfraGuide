@@ -175,9 +175,12 @@ y_train = torch.tensor([3.0, 5.0, 7.0, 9.0])
 for epoch in range(100):
     loss = ((w * x_train + b - y_train) ** 2).mean()
     loss.backward()
+    # torch.no_grad()：参数更新本身不需要被记录进计算图，
+    # 否则这里的减法会被 autograd 继续追踪，导致计算图无意义地增长
     with torch.no_grad():
-        w -= 0.01 * w.grad
+        w -= 0.01 * w.grad  # in-place 更新，直接修改 tensor 数据
         b -= 0.01 * b.grad
+    # 每轮更新后必须清零梯度，否则下一轮 backward() 会在旧梯度基础上累加
     w.grad.zero_()
     b.grad.zero_()
 
@@ -368,7 +371,7 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epoc
 
 # 训练
 for epoch in range(num_epochs):
-    model.train()
+    model.train()  # 训练模式：启用 Dropout 等只在训练时生效的层
     total_loss = 0
     for images, labels in train_loader:
         images, labels = images.to(device), labels.to(device)
@@ -380,9 +383,9 @@ for epoch in range(num_epochs):
     scheduler.step()
 
     # 验证
-    model.eval()
+    model.eval()  # 推理模式：关闭 Dropout，行为与训练时不同
     correct = 0
-    with torch.no_grad():
+    with torch.no_grad():  # 验证不需要梯度，禁用梯度追踪以节省显存、加快计算
         for images, labels in test_loader:
             images, labels = images.to(device), labels.to(device)
             correct += (model(images).argmax(1) == labels).sum().item()
@@ -434,14 +437,16 @@ for images, labels in train_loader:
     optimizer.zero_grad()
 
 # FP16 混合精度（需要 GradScaler 防止梯度下溢）
+# GradScaler：FP16 动态范围小，小梯度容易下溢为 0，
+# 先把 loss 放大再 backward，更新前再按比例缩小回来，避免梯度信息丢失
 scaler = torch.cuda.amp.GradScaler()
 for images, labels in train_loader:
     images, labels = images.to(device), labels.to(device)
     with torch.autocast(device_type='cuda', dtype=torch.float16):
         loss = nn.functional.cross_entropy(model(images), labels)
-    scaler.scale(loss).backward()
-    scaler.step(optimizer)
-    scaler.update()
+    scaler.scale(loss).backward()   # 放大后的 loss 做反向传播
+    scaler.step(optimizer)          # 先把梯度缩小回原尺度，再更新参数
+    scaler.update()                 # 根据本轮是否溢出，调整下一轮的缩放系数
     optimizer.zero_grad()
 ```
 
@@ -522,6 +527,7 @@ print(f"FP32: {fp32_peak:.1f} MB | BF16: {bf16_peak:.1f} MB | 节省: {(1-bf16_p
 
 ```python
 import torch
+# torch.profiler：官方性能分析工具，记录每个算子在 CPU/GPU 上的耗时和显存占用
 from torch.profiler import profile, record_function, ProfilerActivity
 
 model = torch.nn.Linear(1024, 1024).cuda()
@@ -529,6 +535,7 @@ x = torch.randn(64, 1024).cuda()
 
 with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
              record_shapes=True, profile_memory=True) as prof:
+    # record_function：给这段代码打标签，方便在结果表格里按名称区分耗时
     with record_function("forward_pass"):
         output = model(x)
     with record_function("backward_pass"):

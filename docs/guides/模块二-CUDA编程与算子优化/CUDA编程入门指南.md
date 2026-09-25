@@ -89,6 +89,8 @@ nvcc -Xptxas -v hello.cu -o hello
 ```cpp
 // 声明核函数
 __global__ void myKernel(float* data, int n) {
+    // 全局线程索引：blockIdx.x * blockDim.x 定位到当前 Block 的起始偏移，
+    // 再加上 threadIdx.x（Block 内的线程编号），得到这个线程在整个 Grid 中的唯一编号
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) {
         data[idx] *= 2.0f;
@@ -133,6 +135,8 @@ int col = blockIdx.x * blockDim.x + threadIdx.x;
 
 // 使用 dim3 指定 2D 维度
 dim3 blockDim(16, 16);     // 每个 Block 16x16 = 256 个线程
+// (width + 15) / 16 是向上取整技巧：分母 16 减 1 后加到分子上，
+// 确保即使 width 不能被 16 整除，也能多分配一个 Block 覆盖余下的元素
 dim3 gridDim(
     (width + 15) / 16,     // x 方向 Block 数量
     (height + 15) / 16     // y 方向 Block 数量
@@ -219,6 +223,8 @@ cudaFreeHost(h_pinned);            // 释放锁页内存
 CUDA API 调用可能失败，生产代码中必须检查错误：
 
 ```cpp
+// do { ... } while(0) 是 C 宏的经典写法：把多条语句包成一个整体，
+// 保证宏展开后无论后面有没有分号、是否嵌在 if/else 里都不会破坏语法
 #define CUDA_CHECK(call) do { \
     cudaError_t err = call; \
     if (err != cudaSuccess) { \
@@ -326,8 +332,10 @@ __global__ void sharedMemDemo(float* input, float* output, int n) {
 **动态共享内存**——大小在 kernel 启动时指定：
 
 ```cpp
+// extern __shared__ 声明不指定数组大小，实际大小由 kernel 启动时的第三个尖括号参数决定
 extern __shared__ float dynamic_smem[];
 
+// <<<gridDim, blockDim, sharedMemBytes>>> 的第三个参数是每个 Block 动态申请的共享内存字节数
 kernel<<<gridDim, blockDim, sharedMemBytes>>>(args);
 ```
 
@@ -431,6 +439,7 @@ Warp 内线程可以直接交换数据，无需共享内存：
 
 ```cpp
 // Warp Shuffle：线程间直接交换寄存器值
+// 0xFFFFFFFF 是参与掩码，全 1 表示 Warp 内 32 个线程全部参与这次操作
 float val = __shfl_down_sync(0xFFFFFFFF, myVal, delta);
 // 线程 i 获取线程 i+delta 的值
 
@@ -488,6 +497,8 @@ Occupancy = 实际活跃 Warp 数 / SM 最大 Warp 数。它反映了 GPU 并行
 ```cpp
 // 让编译器帮你计算最优 Block Size
 int minGridSize, blockSize;
+// cudaOccupancyMaxPotentialBlockSize 会根据 kernel 的寄存器和共享内存用量，
+// 反推出能让 Occupancy 最大化的 Block Size，省去手动试参数
 cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, myKernel, 0, 0);
 printf("Optimal block size: %d\n", blockSize);
 ```
@@ -586,6 +597,8 @@ int main() {
 
     // 计算 Grid 和 Block 维度
     int blockSize = 256;
+    // (N + blockSize - 1) / blockSize 是整数除法的向上取整技巧：
+    // 先加上 (blockSize - 1) 再做除法，确保哪怕有余数也能多分一个 Block
     int gridSize = (N + blockSize - 1) / blockSize;
 
     // 启动 Kernel
@@ -671,6 +684,8 @@ __global__ void reduce_base(float* input, float* output, int n) {
 当 `step <= 32` 时，只有 1 个 Warp（32 线程）在工作。Warp 内线程天然 SIMT 锁步执行，不需要 `__syncthreads()`。直接展开这几轮循环可以省去多余的同步屏障开销：
 
 ```cuda
+// volatile 防止编译器把 smem 缓存进寄存器或重排读写顺序，
+// 保证每次写入都真实落到共享内存，让 Warp 内其他线程能看到最新值
 __device__ void warpReduce(volatile float* smem, int tid) {
     smem[tid] += smem[tid + 32];
     smem[tid] += smem[tid + 16];
@@ -691,6 +706,7 @@ __device__ void warpReduce(volatile float* smem, int tid) {
 __global__ void reduce_opt(float* input, float* output, int n) {
     extern __shared__ float smem[];
     int tid = threadIdx.x;
+    // 每个 Block 现在要负责 blockDim.x * 2 个元素，所以起始偏移按这个更大的步幅计算
     int gid = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
 
     // 每个线程加载并累加 2 个元素
@@ -734,6 +750,8 @@ __global__ void gemmNaive(float* A, float* B, float* C,
 
     if (row < M && col < N) {
         float sum = 0.0f;
+        // 假设矩阵按行主序存储：A[row * K + k] 定位到 A 的第 row 行第 k 列，
+        // B[k * N + col] 定位到 B 的第 k 行第 col 列
         for (int k = 0; k < K; k++) {
             sum += A[row * K + k] * B[k * N + col];
         }
@@ -760,7 +778,7 @@ __global__ void gemmTiled(float* A, float* B, float* C,
     int col = blockIdx.x * TILE_SIZE + threadIdx.x;
     float sum = 0.0f;
 
-    // 沿 K 维度分块迭代
+    // 沿 K 维度分块迭代，(K + TILE_SIZE - 1) / TILE_SIZE 向上取整，保证 K 不能整除 TILE_SIZE 时也能覆盖剩余部分
     for (int t = 0; t < (K + TILE_SIZE - 1) / TILE_SIZE; t++) {
         // 协作加载 Tile 到共享内存
         int aCol = t * TILE_SIZE + threadIdx.x;
@@ -778,6 +796,7 @@ __global__ void gemmTiled(float* A, float* B, float* C,
             sum += As[threadIdx.y][k] * Bs[k][threadIdx.x];
         }
 
+        // 第二次同步：确保所有线程都用完当前 Tile，才能进入下一轮循环覆盖 As/Bs
         __syncthreads();
     }
 
@@ -816,6 +835,9 @@ cublasCreate(&handle);
 
 float alpha = 1.0f, beta = 0.0f;
 // C = alpha * A * B + beta * C
+// cuBLAS 假设矩阵是列主序存储，而 C/C++ 数组习惯行主序；
+// 这里通过交换 A、B 的位置和参数顺序，利用 (AB)^T = B^T A^T 的关系，
+// 让 cuBLAS 按列主序计算出的结果，恰好对应我们想要的行主序 C = A * B
 cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N,
             N, M, K, &alpha, d_B, N, d_A, K, &beta, d_C, N);
 
@@ -843,7 +865,10 @@ __global__ void softmaxNaive(float* input, float* output, int N) {
     int tid = threadIdx.x;
 
     // 1. 求 max（Reduce 操作）
+    // -FLT_MAX 是 float 能表示的最小值，作为求最大值的初始值，确保第一次比较必然被覆盖
     float maxVal = -FLT_MAX;
+    // 线程跨步循环（grid/block-stride loop）：每个线程从 tid 开始，每次跳过 blockDim.x 个元素，
+    // 这样 blockDim.x 个线程就能循环覆盖长度为 N 的整行数据，不受 Block 大小限制
     for (int i = tid; i < N; i += blockDim.x) {
         maxVal = fmaxf(maxVal, input[i]);
     }
@@ -1034,19 +1059,20 @@ import triton
 import triton.language as tl
 import torch
 
+# @triton.jit 标记这是一个会被 Triton 编译器编译成 GPU kernel 的函数
 @triton.jit
 def add_kernel(
     x_ptr, y_ptr, output_ptr,
     n_elements,
-    BLOCK_SIZE: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,  # tl.constexpr 表示编译期常量，编译器可据此生成专用的高效代码
 ):
     # 计算当前 Block 处理的元素范围
-    pid = tl.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
+    pid = tl.program_id(0)  # 相当于 CUDA 里的 blockIdx，取得当前程序实例（Block）的编号
+    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)  # tl.arange 生成 [0, BLOCK_SIZE) 的向量，等价于 CUDA 中一个 Block 内的线程偏移
+    mask = offsets < n_elements  # 越界掩码：处理 n_elements 不是 BLOCK_SIZE 整数倍的情况
 
     # 加载、计算、存储
-    x = tl.load(x_ptr + offsets, mask=mask)
+    x = tl.load(x_ptr + offsets, mask=mask)  # mask 为 False 的位置不会真正越界读取
     y = tl.load(y_ptr + offsets, mask=mask)
     output = x + y
     tl.store(output_ptr + offsets, output, mask=mask)
@@ -1055,6 +1081,7 @@ def add_kernel(
 def add(x: torch.Tensor, y: torch.Tensor):
     output = torch.empty_like(x)
     n = x.numel()
+    # triton.cdiv 是向上取整除法（ceiling division），用来算需要多少个 Block 才能覆盖 n 个元素
     grid = lambda meta: (triton.cdiv(n, meta['BLOCK_SIZE']),)
     add_kernel[grid](x, y, output, n, BLOCK_SIZE=1024)
     return output
@@ -1075,12 +1102,14 @@ def softmax_kernel(
     input_row_stride, output_row_stride,
     BLOCK_SIZE: tl.constexpr,
 ):
+    # 一个 Block（program）处理一行，row_idx 即行号
     row_idx = tl.program_id(0)
     row_start = row_idx * input_row_stride
     col_offsets = tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < n_cols
 
-    # 加载一行
+    # 加载一行；other=-float('inf') 表示被 mask 掉的越界位置填充负无穷，
+    # 这样它们参与后续 max/exp 计算时不会影响结果
     row = tl.load(input_ptr + row_start + col_offsets, mask=mask, other=-float('inf'))
 
     # 数值稳定的 softmax
@@ -1108,6 +1137,7 @@ import torch
 
 @torch.compile
 def fused_gelu(x):
+    # 0.7978845608 ≈ sqrt(2/π)，0.044715 是拟合常数，两者都来自 GELU 的 tanh 近似公式
     return x * 0.5 * (1.0 + torch.tanh(0.7978845608 * (x + 0.044715 * x ** 3)))
 
 # 首次调用触发编译，后续调用使用编译结果
