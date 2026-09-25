@@ -4,6 +4,6 @@
   "outputDirectory": "dist",
   "redirects": [
     { "source": "/AIInfraGuide", "destination": "/", "permanent": false },
-    { "source": "/AIInfraGuide/:path*", "destination": "/:path*", "permanent": false }
+    { "source": "/AIInfraGuide/(.*)", "destination": "/$1", "permanent": false }
   ]
 }
